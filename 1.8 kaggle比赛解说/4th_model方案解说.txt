@@ -1,0 +1,43 @@
+他们自己的陈述：
+https://www.kaggle.com/competitions/jpx-tokyo-stock-exchange-prediction/writeups/ddm-4th-place-solution
+
+翻译：
+https://zhidao.baidu.com/question/597027652600674085.html
+
+该方案的具体实现方式：
+1、就按照当天涨跌幅排序
+考虑这个指标：
+return_1day = feats["AdjustedClose"].pct_change(1)
+	
+2、同时将预期股息率大于零的股票强制置底（可能是为了避免过高的分红对模型预测造成干扰）。
+考虑这个指标
+ExpectedDividend，预期股息率
+
+原数据中 ExpectedDividend 列的定义如下：
+Expected dividend value for ex-right date. This value is recorded 2 business days before ex-dividend date.
+除权日预期股息值。该值在除权日前两个交易日记录。
+Change ratio of adjusted closing price between t+2 and t+1 where t+0 is TradeDate
+调整后收盘价在 t+2 和 t+1 之间的变化率，其中 t+0 为交易日。
+也就是说，如果在t日ExpectedDividend大于0，说明在t+1日会登记哪些投资者享受分红，并在t+2日派发股息。
+所以t+2的Close很可能会小于t+1的Close。
+即t日的Target是负数。
+
+在目标数据中，也添加 ExpectedDividend 这一列，但其定义修改如下：
+对于原ExpectedDividend(除权日的预期股息价值)大于0，记为1，否则记为0。
+
+然后提交了两个模型：
+本质也就是：https://mbd.baidu.com/newspage/data/dtlandingsuper?nid=dt_3753424353806929138&sourceFrom=search_a
+1、趋势跟踪模型，通过计算股票当日收益率并按升序排列来捕捉动量效应
+2、均值回归模型，则按收益率降序排列来识别反转机会，与前一个模型完全反转
+
+https://wenku.baidu.com/view/51cb260a78d184254b35eefdc8d376eeaeaa17b1.html
+这里说，这两个子模型的输出通过一个加权框架融合，最终在评估指标上取得了0.347的PB值（Precision at B）。
+但是，应该是二者只选其一。
+
+作者自称：排名反转
+颠倒排名后，得分将乘以 -1。在比赛中，我们可以选择两个模型，因此采用这种策略将确保得分大于 0。
+然后 https://www.kaggle.com/competitions/jpx-tokyo-stock-exchange-prediction/writeups/ddm-4th-place-solution
+在下面回帖说，就单纯是模型2获得了第四名
+
+看代码也是，就是 return_1day + 修改后的ExpectedDividend * 100
+如果只看 return_1day 也就是：回报率越低的，反而排名越前：认为后一天与前一天的趋势完全反转

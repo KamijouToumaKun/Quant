@@ -1,0 +1,15 @@
+https://cloud.tencent.com/developer/article/1737843
+
+talib的量化指标大概也就分为10个大类。他们分别为：重叠研究、动量指标、成交量指标、波动性指标、价格指标、周期指标、形态识别、统计函数、数学变化、数学运算符等。
+
+talib是python的量化指标库，其中包含了很多150多种量化指标，所以talib是非常值得我们学习和使用的。talib的安装和以往的python库安装稍有不同
+
+以前：采用pip install talib是安装不了的。需要到tablib的网站上下载和你的操作系统匹配的tablib版本（whl文件），然后再使用pip install **.whl即可。这里稍微提一下安装，避免踩坑。对于学习talib来说，了解其各种指标的使用才是重中之重
+
+http://www.360doc.com/content/23/0813/20/1092390153_1092390153.shtml
+
+所有指标的介绍
+
+http://www.360doc.com/content/25/0321/23/7069983_1149564377.shtml
+
+现在可以直接 pip install TA-Lib

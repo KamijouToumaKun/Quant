@@ -1,0 +1,15 @@
+请人远程查看mac电脑
+
+ssh
+https://support.apple.com/zh-cn/guide/mac-help/mchlp1066/10.13/mac/10.13
+
+如果没有用的话，从服务器过来
+sudo lsof -iTCP -sTCP:LISTEN | grep ssh
+
+ps aux | grep sshd
+# 显示
+# touma            73744   0.0  0.0 410593296   1072 s000  R+    8:28下午   0:00.00 grep sshd
+
+sudo systemsetup -setremotelogin on
+# 显示
+# setremotelogin: remote login is already On.

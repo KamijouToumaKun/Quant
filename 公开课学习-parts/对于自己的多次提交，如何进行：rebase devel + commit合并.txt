@@ -1,0 +1,169 @@
+0、第一次提交时
+
+git checkout -b 新的分支名例如yyx_add_query_drive_task_by_vin_and_time
+git add ...
+git commit -m "..."
+git push origin yyx_add_query_drive_task_by_vin_and_time
+把自己的分支推送到云端
+
+
+
+对于自己的多次提交，如何进行：rebase devel + commit合并
+
+1、先rebase
+
+git checkout yyx_delete_generate_public_road_mode_route_in_shadow_mode
+git rebase --onto dev dev yyx_delete_generate_public_road_mode_route_in_shadow_mode
+
+直接成功了：
+成功变基并更新 refs/heads/yyx_delete_generate_public_road_mode_route_in_shadow_mode。
+本来可能会有冲突：
+
+% git status
+交互式变基操作正在进行中；至 
+
+...
+  
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+
+
+ 
+解决具体的冲突内容
+
+git add ...
+
+  $ git rebase --continue
+  
+  然后不断重复以上过程
+  
+最后  
+  % git status
+  成功变基并更新 refs/heads/yyx_delete_generate_public_road_mode_route_in_shadow_mode
+  
+  git push
+
+
+
+2、再合并所有的commit为一个
+git log
+
+commit 2fa115c1fd4af9ecbe369c71e82560457c03cf08 (HEAD -> yyx_delete_generate_public_road_mode_route_in_shadow_mode, origin/yyx_delete_generate_public_road_mode_route_in_shadow_mode)
+Author: yiyuxuan <yiyuxuan@meituan.com>
+Date:   Tue Nov 4 11:00:16 2025 +0800
+
+    revert DriveTask.java in dev
+
+commit 31321fdb2508a41eb0bde8157b5be1b27dbd1189
+Author: yiyuxuan <yiyuxuan@meituan.com>
+Date:   Thu Oct 30 20:21:13 2025 +0800
+
+    delete generatePublicRoadModeRouteInShadowMode
+
+commit 9bc8c5f41d07280d0ecddf0353c9299b909bbb85 (origin/release/6.15.0, origin/dev, origin/HEAD, dev)
+Merge: b592ad730 e1ff09cc1
+Author: chenshuzhe <chenshuzhe@meituan.com>
+Date:   Tue Nov 4 10:10:01 2025 +0800
+
+    Merge #3076 branch 'shuzhe/call_for_near_desitination_failed' into 'dev'
+    
+    [FC] call for close_to_destination failed.
+    
+    * [FC] call for close_to_destination failed.
+
+...
+
+然后就可以
+git rebase -i 9bc8c5f41d07280d0ecddf0353c9299b909bbb85 # 第一个commit再之前的一个
+第一个 31321fdb2508a41eb0bde8157b5be1b27dbd1189 是pick，后面的都改成fixup
+就可以把这些commit都合在一起了
+
+git push 还是不行
+还是得 git push --force
+
+
+
+3、平时的每次推送都改成
+git commit --amend
+git push --force
+
+有时还是会显示冲突：git云端显示黄色的diff
+
+解决方案：还是需要rebase一下
+
+git checkout dev
+git pull
+git rebase --onto dev dev yyx_check_b_as_vehicle_state_when_has_start_memory_route
+
+git status
+解决冲突之后
+git add ...
+git rebase --continue
+
+此时 git log 发现没有我的提交记录
+# git commit -m "[FC] check: point b as vehicle state when there is start memory route" 不对
+还是要
+git commit --amend
+git push --force
+
+--amend 的时候，可能合并到的一个commit是别人的
+此时，可以修改掉别人的提交信息，改成自己的
+
+以及改作者
+git commit --amend –-author="yiyuxuan <yiyuxuan@meituan.com>"
+# 错误：路径规格 '–-author=yiyuxuan <yiyuxuan@meituan.com>' 未匹配任何 git 已知文件
+
+那就这样改
+git commit --amend --reset-author --no-edit
+git push --force
+可以了
+
+
+
+4、有时有新问题：就算切换分支，然后再切换回来，也会报代码偏离
+% git push
+美团代码仓库(DevTools Code)                                 代码仓库组
+[连接信息]:         hh-proxy09 => b29b6ac1-f851-44cb-a399-4e4d6ccbc8ff
+[路由信息]:                                master-mcode_shard_05-mt-04
+                                   
+To ssh://git.sankuai.com/walle/mender_portal.git
+ ! [rejected]            yyx_delete_generate_public_road_mode_route_in_shadow_mode -> yyx_delete_generate_public_road_mode_route_in_shadow_mode (non-fast-forward)
+错误：无法推送一些引用到 'ssh://git.sankuai.com/walle/mender_portal.git'
+提示： 更新被拒绝，因为您当前分支的最新提交落后于其对应的远程分支。
+提示： 如果您希望先与远程变更合并，请在推送前执行 'git pull'。
+提示： 详见 'git push --help' 中的 'Note about fast-forwards' 小节。
+
+那么就需要
+git pull --rebase origin yyx_delete_generate_public_road_mode_route_in_shadow_mode
+
+% git status
+位于分支 yyx_check_b_as_vehicle_state_when_has_start_memory_route
+您的分支与上游分支 'origin/yyx_check_b_as_vehicle_state_when_has_start_memory_route' 一致。
+
+git push 也说 无文件要提交，干净的工作区
+总之，又恢复到了原来的样子
+
+
+
+5、cherry pick 已经提交的 commit id
+例如具体的commit id
+PR本身的id是
+PR = 3142: f2652f7289e
+PR = 3140: b6d382da3f1
+merge PR的id是
+Merge #3142 branch 'featurn/spliced_memory_route' into 'dev' 9263d82922a
+Merge #3140 branch 'featurn/spliced_memory_route' into 'dev' 8ef68bd2987
+
+git checkout test/251125
+git cherry-pick <commit-hash>
+
+但是如果pick的是merge的commit
+git cherry-pick 8ef68bd2987
+错误：提交 8ef68bd29873dd6c0baacf6328ce44a5de28beda 是一个合并提交但未提供 -m 选项
+
+所以需要pick的是PR本身的commit
+git cherry-pick b6d382da3f1
+然后解决冲突
+git status 查看所有修改了的文件
+git add 所有新文件
+git cherry-pick --continue # 类似于 git rebase --continue
+git push 这里不需要--force # rebase也是一样？但似乎有时候需要--force？

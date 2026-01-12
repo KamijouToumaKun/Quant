@@ -1,0 +1,15 @@
+https://blog.csdn.net/qq_41941900/article/details/142366183
+
+一、分卷压缩
+1.先压缩成完整zip：zip -r a.zip ./somethings 还可以加密码
+2.再分割成分卷：
+	zip -s 4g a.zip ——out b.zip，单位可以是m、g、t等
+	或者
+	split -b 20m folder.zip part_
+
+二、分卷解压
+1.先将分卷合并成完整zip：
+1.方法—：cat b.zip b.z01 b.z02 > a.zip 或 cat b.z* > a.zip
+2.方法二：zip -F b.zip --out a.zip
+3.方法三：zip -s 0 b.zip -—out a.zip
+2.再解压zip到指定目录：unzip a.zip -d ./data

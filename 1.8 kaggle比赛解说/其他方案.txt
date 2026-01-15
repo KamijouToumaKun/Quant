@@ -1,0 +1,16 @@
+所有比赛总览
+https://blog.csdn.net/weixin_42645636/article/details/131579190
+https://zhuanlan.zhihu.com/p/641829666
+https://zhuanlan.zhihu.com/p/543250593
+
+解说
+https://www.kaggle.com/code/chumajin/easy-to-understand-the-competition
+
+第一名方案 但是有争议
+https://zhuanlan.zhihu.com/p/666364535
+
+第二名方案
+https://kakawanyifan.com/20102
+
+第三名方案
+https://kakawanyifan.com/20103

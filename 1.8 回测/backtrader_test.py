@@ -31,18 +31,6 @@ class BaseStrategy(bt.Strategy):
         roi = pnl / self.start_cash
         print('ROI: {:.2f}%'.format(100.0 * roi))
 
-        # 可视化
-        # cerebro.plot(iplot=False,
-        #     style="line", # 绘制线型价格走势，可改为"candelstick" 样式
-        #     lcolors=colors,
-        #     plotdist=0.1,
-        #     bartrans=0.2,
-        #     volup="#ff9896",
-        #     voldown="#98df8a",
-        #     loc="#5f5a41",
-        #     grid=False
-        # ) # 删除水平网格
-
     def log(self, text, dt=None, doprint=False):
         if self.params["printlog"] or doprint:
             # self.datas[0] 就是 self.data 在只加载单只股票时可以用，下同
@@ -166,15 +154,15 @@ class MACDStrategy(BaseStrategy):
         # 这一点我在一开始使用的时候也被作者的逻辑震惊了，原来还能这么设置   
 
         if not self.position: # 没有持仓才买入
-            # 零阶逻辑：价格上穿均线买入，下穿卖出
+            # 零阶逻辑（单均线策略）：价格上穿均线买入，下穿卖出
             if self.order_type == '0th order':
                 if self.data.close[-1] < self.ma_slow[-1] and self.data.close[0] > self.ma_slow[0]:
                     self.order = self.buy(size=buy_size)
-            # 一阶逻辑：MA_fast 上穿 MA_slow 买入，下穿卖出（也就是双均线策略）
+            # 一阶逻辑（双均线策略）：MA_fast 上穿 MA_slow 买入，下穿卖出（也就是双均线策略）
             elif self.order_type == '1st order':
                 if self.ma_fast[-1] < self.ma_slow[-1] and self.ma_fast[0] > self.ma_slow[0]:
                     self.order = self.buy(size=buy_size)
-            # 二阶逻辑：DIF上穿DEA买入，下穿卖出
+            # 二阶逻辑（MACD策略）：DIF上穿DEA买入，下穿卖出
             elif self.order_type == '2nd order':
                 if self.dif[-1] < self.dea[-1] and self.dif[0] > self.dea[0]:
                     self.order = self.buy(size=buy_size)
@@ -246,6 +234,81 @@ class BuyAndHoldStrategy(BaseStrategy):
             # 止损单（exectype=bt.Order.Stop）：当价格触及止损价时以市价成交。
             # 止损限价单（exectype=bt.Order.StopLimit）：先以止损价触发，再以限价成交。
 
+# 轮动策略
+class ETFMomentumRotationStrategy(BaseStrategy):
+    def __init__(self):
+        super().__init__()
+        self.params.update(
+            dict(
+                period = 12,      # 动量周期
+                num_hold = 3,     # 选择动量前3，平均分配仓位
+                t_plus = 1,       # 交易周期，这里设置是每天
+            )
+        )
+        self.days_counter = 0     # TODO：更高级的用法是backtrader的add_timer
+
+    def next(self):
+        if len(self.datas[0].open) < self.params['period']: # 对于前N天前的数据，历史积累时间都还不够
+            return # 则直接跳过
+
+        self.days_counter += 1 # 每个交易日+=1
+        if self.days_counter == self.params['t_plus']:
+            # 定义1、当天的收盘价相对于N天前的开盘价
+            # https://zhuanlan.zhihu.com/p/716627839
+            # 也是以下代码的来源。有一些问题，我修改了
+            # 候选池里的五个：
+            # 黄金(ETF基金:518880)
+            # 纳指(ETF基金:513100)
+            # 创业板(ETF基金:159915)
+            # 沪深300(ETF基金:510300)
+            # 标普500(ETF基金:513500)
+            
+            # 定义2、采用的是当前的收盘价相对于N天前的收盘价
+            # 这个是基于 akshare 的
+            # https://www.zhihu.com/question/9028560438/answer/1982504988551948180
+            # 或者看这个基于 qstock 的 https://zhuanlan.zhihu.com/p/646860740
+            # 两个版本跑出来的结果基本一致？
+            # 但是这个代码不全，都没有讲具体怎么买的
+            # 候选池里的四个：
+            # 510300：沪深300ETF，代表大盘
+            # 510500：中证500ETF，代表小盘
+            # 510880：红利ETF，代表价值
+            # 159915：创业板ETF，代表成长
+            # 后来又修改成了四个：
+            # 510880：红利ETF，代表价值
+            # 159915：创业板ETF，代表成长
+            # 513100：纳指ETF，代表外盘
+            # 518880：黄金ETF，代表商品
+
+            # 定义3、采用 linregress 对于过去若干天进行线性拟合
+            # https://zhuanlan.zhihu.com/p/321149887
+            # 这个选择的etf更多更特别
+            # 而且用到了 add_timer 的高级用法
+            # 但是只有代码，没有结果，看看就好了
+
+            momenta = [
+                (data.close[0] / data.open[-self.params['period']] - 1, data)
+                    for data in self.datas # 计算每一天收盘价相对于N天前开盘价的收益率
+            ]
+            all_negative = all(momentum[0] < 0 for momentum in momenta)
+
+            if all_negative: # 全部都负的话，使用动量的绝对值进行排序：负得越多的越买？TODO
+                momenta.sort(key=lambda momentum: abs(momentum[0]), reverse=True)
+            else: # 正常排序
+                momenta.sort(key=lambda momentum: momentum[0], reverse=True)
+
+            # 使用调整仓位的函数，而不是先卖再买：白交两次手续费
+            # 对于排名在num之后的ETF，清空其仓位。
+            for momentum, data in momenta[self.params['num_hold']:]:
+                self.order_target_size(data, 0) # 或者直接 self.close(data)
+
+            # 对于选中的ETF，按照1/num的比例分配仓位。
+            for momentum, data in momenta[:self.params['num_hold']]:
+                self.order_target_percent(data, 1 / self.params['num_hold'] * 0.95) # 不然发现有时无法买进
+                # TODO：downcast
+
+            self.days_counter = 0
+
 # 2. 创建Cerebro引擎
 # 又叫做：
 # 实例化大脑
@@ -287,8 +350,17 @@ fq_type = 'qfq'
 import akshare as ak
 # start_date = "20220701"
 # end_date = "20250701"
-start_date = "20230101"
+# start_date = "20230101"
+# end_date = "20241231"
+start_date = "20200101"
 end_date = "20241231"
+
+import pandas as pd
+# pd.set_option('display.max_rows', None)  # 不限制行数
+# pd.set_option('display.max_columns', None)  # 不限制列数
+# pd.set_option('display.width', None)  # 不限制输出宽度
+from_date = pd.Timestamp(start_date)
+to_date = pd.Timestamp(end_date)
 
 # qfq，新浪接口
 # 初始资金: 100000.00
@@ -317,11 +389,6 @@ end_date = "20241231"
 
 
 
-import pandas as pd
-# pd.set_option('display.max_rows', None)  # 不限制行数
-# pd.set_option('display.max_columns', None)  # 不限制列数
-# pd.set_option('display.width', None)  # 不限制输出宽度
-
 # 用 DataFeeds 模块导入DataFrame 数据框必须依次包含7个字段
 # 'datetime'、 'open'、'high'、'low'、'close'、'volume'、'openinterest'
 # 所以下面两个接口都需要对列名进行修改
@@ -341,20 +408,37 @@ import pandas as pd
 # fund_hist['openinterest'] = 0 # TODO: akshare不提供：未平仓合约的数量（Open Interest）
 
 # 2. 新浪接口
-fund_hist = ak.stock_zh_a_daily( # 换成了新浪的接口
-    symbol="sh"+"601398",
-    start_date="20220701", end_date="20250701", # 爸爸的操作时间比我以为的更长
-    adjust=fq_type
-)
-fund_hist['datetime'] = pd.to_datetime(fund_hist['date'])
-fund_hist['openinterest'] = 0 # TODO: akshare不提供：未平仓合约的数量（Open Interest）
+# fund_hist = ak.stock_zh_a_daily( # 换成了新浪的接口
+#     symbol="sh"+"601398",
+#     start_date="20220701", end_date="20250701", # 爸爸的操作时间比我以为的更长
+#     adjust=fq_type
+# )
+# fund_hist['datetime'] = pd.to_datetime(fund_hist['date'])
+# fund_hist['openinterest'] = 0 # TODO: akshare不提供：未平仓合约的数量（Open Interest）
 
 # 加载到 cerebro 中
-fund_hist.set_index("datetime", inplace=True) # 需要修改index为datetime这一列
-from_date = pd.Timestamp(start_date)
-to_date = pd.Timestamp(end_date)
-data = bt.feeds.PandasData(dataname=fund_hist, fromdate=from_date, todate=to_date)
-cerebro.adddata(data)
+# fund_hist.set_index("datetime", inplace=True) # 需要修改index为datetime这一列
+# data = bt.feeds.PandasData(dataname=fund_hist, fromdate=from_date, todate=to_date)
+# cerebro.adddata(data)
+
+# 暂时还是使用东财接口，处理轮动资产
+stock_lists = ['518880', '513100', '159915', '510300', '513500']    
+for stock in stock_lists:
+    fund_hist = ak.fund_etf_hist_em(
+        symbol=stock, period="daily",
+        start_date=start_date, end_date=end_date,
+        adjust=fq_type
+    )
+    fund_hist['datetime'] = pd.to_datetime(fund_hist["日期"])
+    fund_hist['open'] = fund_hist['开盘']
+    fund_hist['close'] = fund_hist['收盘']
+    fund_hist['high'] = fund_hist['最高']
+    fund_hist['low'] = fund_hist['最低']
+    fund_hist['volume'] = fund_hist['成交量']
+    fund_hist['openinterest'] = 0
+    fund_hist.set_index("datetime", inplace=True)
+    data = bt.feeds.PandasData(dataname=fund_hist, fromdate=from_date, todate=to_date)
+    cerebro.adddata(data, name=stock)  #数据投喂
 
 # 4. 设置初始资金和费率（以及滑点）
 start_cash = 100000
@@ -364,3 +448,40 @@ cerebro.broker.setcommission(commission=0.002) # 双边佣金
 
 # 5. 启动回测
 cerebro.run()
+
+# 对于轮动策略
+
+# 佣金为0时，初始资金: 100000.00
+# 最终资金: 114040.20
+# 净收益: 14040.20
+# ROI: 14.04%
+# 还是低了些
+
+# 佣金为万2时
+# 初始资金: 100000.00
+# 最终资金: 108838.79
+# 净收益: 8838.79
+# ROI: 8.84%
+
+# 佣金为万20时，是倒亏的
+# 初始资金: 100000.00
+# 最终资金: 71744.54
+# 净收益: -28255.46
+# ROI: -28.26%
+
+# cerebro.broker.set_slippage_perc(perc=0.001) # 双边滑点
+
+# 5. 启动回测
+cerebro.run()
+
+# 可视化，不能写在stop里，需要写在 cerebro.run() 后面
+# cerebro.plot(iplot=False,
+#     style="line", # 绘制线型价格走势，可改为"candelstick" 样式
+#     # lcolors=colors,
+#     plotdist=0.1,
+#     bartrans=0.2,
+#     volup="#ff9896",
+#     voldown="#98df8a",
+#     loc="#5f5a41",
+#     grid=False # 删除水平网格
+# ) 

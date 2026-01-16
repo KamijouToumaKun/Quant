@@ -1,582 +1,559 @@
-# readme: https://xueqiu.com/5610083273/323452373
-# 华泰柏瑞上证红利ETF（代码510880）
-# 回测了一下从2014年1月1日到2024年12月31日，采用分红再投资的方法买入510880，
-# 其中网格最优参数下收益率是255.50%，买入一直持有是268.65%，
-# 也就是510880,分红再投资获得10年2.68倍的收益
+import backtrader as bt
 
-# 代码：https://xueqiu.com/5610083273/323453634
-# 1、整个红利ETF，也就是510880从2019年1月4日到2021年12月31日，完全不考虑网格和分红的情况下，其持有收益为41.10%
-# 由于对于红利ETF来说，其分红是非常重要的属性，所以我在这种情况下并没有考虑网格交易，而是改进代码，将其改成基于分红再投资
-# 而分红后的资金将立即买入作为新的份额输入
-# 当我们考虑分红再投资后，整个期间基金的收益将上升到84.02%，也就是相较于不考虑分后在投资的收益，其总收益几乎增加了1倍，这个结论非常的有意思
-# 但是到目前为止，还没有考虑网格搜索，和网格交易
+def downcast(amount, lot):
+    return abs(amount // lot * lot)
+# downcast函数通过整数除法将订单数量向下舍入到最接近的合约单位倍数
+# 其中，amount为原始订单数量（可正负，正数代表买入，负数代表卖出），lot为合约单位（如100股）。
+# 该函数确保输出数量始终为lot的整数倍，且符号与输入一致。
+# 例如，downcast(418, 100)返回400（即4手），downcast(-418, 100)返回-400。
 
-# 引入了网格搜索：寻找最优参数组合 + 网格交易：做T
-# 采用网格后，其收益情况如何？
-# 我尝试了大量的网格组合，其中关键的变量有以下这些：
-# 第一，initial_ration：也就是我初始投入多少资金，初始仓位占比；
-# 第二，rise_threshold：也就是我的上涨阈值，在上涨多少后抛出部分基金；
-# 第三，fall_threshold：也就是我下跌阈值，下跌多少时抛出部分基金；
-# 最后，是trade_ratio：也就是我每次抛出的交易比例
+# 1. 策略类定义
+# 基类code: https://zhuanlan.zhihu.com/p/6214432946
+class BaseStrategy(bt.Strategy):
+    def __init__(self):
+        # 可配置参数
+        self.params = dict(
+            printlog = True  # 打印交易日志，可以修改
+        )
 
-# 我发现最优参数组合下超额收益为-6.73%,这就说明了如果我是从2019年1月4日开始，也就是上轮牛市的起点开始，
-# 我采用网格的方法无法战胜全仓持有红利ETF并分红再投资
-# 也就是如果同样是分红再投资，中间则无法战胜长期持有
+        self.start_cash = self.broker.get_cash()
+        self.order = None
+        self.buyprice = None
+        self.buycomm = None
 
-# 2、2019年1月4日是绝对低点，我如果选择2019年4月8日，也就是牛市的第一个高点会如何？
-# （也就是下面代码的部分）
-# 我继续进行了回测，当我将日期设置为2019年4月8日至2021年12月31日时，
-# 我们全仓持有并复投的收益降低到35.24%，同时采用最优参数下的网格收益提升到44.04%，也就是获得了8.8%的超额收益。
-# （代码可以复现，我的缩进复原应该没有问题）
-# 这个现象很有意思，说明了当我们全仓在一个最高点买入后，我最终的收益要大幅度降低
-# 同时网格策略似乎比较适合于在一个高点切入，并获得了一定的超额收益
-# === 最优参数组合 ===
-# 初始仓位比例: 0%
-# 上涨阈值: 12%
-# 下跌阈值: 2%
-# 交易比例: 16%
+    def stop(self):
+        # 输出回测结果
+        print(f"初始资金: {self.start_cash:.2f}")
+        port_value = self.broker.getvalue()
+        print(f"最终资金: {port_value:.2f}")
+        pnl = port_value - self.start_cash
+        print(f"净收益: {pnl:.2f}")
+        roi = pnl / self.start_cash
+        print('ROI: {:.2f}%'.format(100.0 * roi))
 
-# 发现了一些代码问题：
-# 1、
-# cash += dividend_cash
-# 我的修改：分红的金额不是全买成股票了吗，为什么cash要加？
-# 修改之后：结果降低了很多
+    def log(self, text, dt=None, doprint=False):
+        if self.params["printlog"] or doprint:
+            # self.datas[0] 就是 self.data 在只加载单只股票时可以用，下同
+            dt = dt or self.data.datetime.date(0)
+            print('%s, %s' % (dt.isoformat(), text))
 
-# 2、以下代码采用的是：前复权+手动模拟分红复投
-# 那为什么不直接采用后复权呢？自动分红复投，计算自己的真实总收益、对比长期投资回报
-# google的ai也是这么说的
-# 我对于复权的理解：
-# 不复权：相当于股价降低了，现金多了。把现金拿回去买股票，则相当于股价降低了，股票份额多了，整体资产几乎不变？
-# 前复权+手动分红复投：相当于采用变低的股价 + 高股票份额
-# 后复权：相当于采用约等于不变的股价（因为整体资产几乎不变） + 不变的股票份额
-# 于是对于后复权调整了一下 ratio，结果差别不大
-# 按理说还需要调整 base_price，但看起来意义也不大
+    def notify_order(self, order):
+        # order可以看订单状态
+        if order.status in [order.Submitted, order.Accepted]:
+            return # 如订单已被处理：提交或接受了，则不用做任何事情
+        elif order.status in [order.Completed]:
+            if order.isbuy(): # 是买入
+                self.log(
+                    '买入 价格:%.2f, 金额:%.2f, 手续费:%.2f' %
+                    (order.executed.price,
+                    order.executed.value,
+                    order.executed.comm)
+                )
 
-# 于是，我又尝试从前复权改成了后复权，结果这下变化很大了
+                self.buyprice = order.executed.price
+                self.buycomm = order.executed.comm
+                self.bar_executed_close = self.data.close[0]
+            # else: 
+            elif order.issell(): # 是卖出
+                self.log(
+                    '卖出 价格:%.2f, 金额:%.2f, 手续费:%.2f' %
+                    (order.executed.price,
+                    order.executed.value,
+                    order.executed.comm)                   
+                )
 
-# 查了一下，分红数量不对，修改了
-# 现在的结果：
-# 核心问题在于：就连买入持有，结果相差还是可能很大！
+            self.bar_executed = len(self) # 记录当前交易数量
+        elif order.status in [order.Canceled, order.Margin, order.Rejected]: # 订单因为缺少资金之类的原因被拒绝执行
+            self.log('取消订单/合并订单:保证金不足/拒绝订单')
 
-# google ai：使用前复权 = 后复权 约等于 不复权+手动模拟分红（无论是复投还是不复投，都是约等号，是正常的）
-# 发现很大的问题在于，复权的计算方式不对，这个问题记录到了excel中
-# 注意，需要是比例复权法给出的结果，于是换到了新浪接口
-# 分红复投肯定比不复投结果会高一些
-# 前复权和后复权，到底跟不复权+手动模拟分红 + 复投还是不复投更接近？ai的说法自己都在变
+        # 订单状态处理完成，设为空
+        self.order = None
 
-# 总结以下，这次回测得到了几点非常有意思的结论：
-# 第一，在相对低点买入和最高点买入，其最终收益相差巨大，因此买入点非常重要。
-# 买入点低，一直买入持有就够了
-# 买入点高，就需要网格操作
-    # 此时再将起始日期改成20190104
-    # 后复权结果：
-    # === 最优参数组合 ===
-    # 初始仓位比例: 90%
-    # 上涨阈值: 18%
-    # 下跌阈值: 2%
-    # 交易比例: 26%
-    # 预期收益率: 23.68%
-    # 交易次数: 22 次
-    # === 最优策略详细回测 ===
-    # 【网格策略】
-    # 最终收益率: 23.68%
-    # 【买入持有策略】
-    # 最终收益率: 22.22%
-    # 超额收益率: 1.46%
+    def notify_trade(self, trade):
+        # notify_trade() 是策略类（Strategy）中的一个回调方法
+        # 当交易状态发生变化时由系统自动触发，用于接收和处理交易事件，如开仓、更新或平仓。
+        # 包括：
+        # 开仓：当订单导致仓位从0变为非零（正值或负值）时触发，表示新交易打开。
+        # 平仓：当订单使仓位从非零变为0时触发，表示交易关闭。
+        # 更新：在交易期间，若仓位变化但未关闭（如加仓或减仓），可能触发更新事件。
 
-    # 改成不复权+手动模拟分红复投试试
-    # === 最优参数组合 ===
-    # 初始仓位比例: 90%
-    # 上涨阈值: 18%
-    # 下跌阈值: 6%
-    # 交易比例: 26%
-    # 预期收益率: 29.55%
-    # 交易次数: 9 次
-    # === 最优策略详细回测 ===
-    # 【网格策略】
-    # 最终收益率: 29.55%
-    # 【买入持有策略】
-    # 最终收益率: 28.22%
-    # 超额收益率: 1.33%
+        # https://zhuanlan.zhihu.com/p/299630905
+        # 在我们一般买卖股票时，只涉及向券商发订单，并无交易（trade）的概念。
+        # 并不是下一个买单，就是一个交易，下一个卖单，又代表另一个交易。交易的概念实际是用户方的概念。
 
-    # 上述结论可以验证
-# 第二，对于红利ETF来说，如果采用网格方式，出现较为频繁的网格参数如下，即上涨阈值设置为12%,下跌阈值设置为2%，买入份额一般为16%。
-# 第三，红利ETF分红后复投非常的重要，会极大的影响收益，例如我如果分红后不复投，我同样选择2019年4月8日这样一个高点，我买入并持有的收益只有3.71%，但是如果我选择分红后复投，其收益将增加到35.24%。这也就意味着，哪怕我红利基金买的位置很高，甚至我全仓买了个高点，我采用分红后复投的方法也能极大程度上增加收益。
-    # 作者关于分红复投的进一步说明：https://xueqiu.com/5610083273/325187886
-    # 我不复投的结果跟作者相仿，复投也只高了一点。是作者自己算错了！
+        # 第一次下买单买100股，此订单执行时，仓位从0变为正值（100），系统打开一个交易，会触发notify_trade方法，在notify_trade中检查交易状态status，为1 open。
+        # 然后下第二张买单100股，订单执行时不会触发notify_trade，仓位变为200。
+        # 然后下卖单卖100股，仍然不会触发notify_trade，仓位变为100。
+        # 再下一个卖单卖100股，执行时，仓位从100变为0，关闭交易，触发notify_trade，交易状态为2 close。
+        if not trade.isclosed: # 表示已平仓
+            return
 
-# 第四，我选择的2021年12月31日其实也是一个很大的低点，如果合理控制高点和低点，我们选择在2019年1月4日到2021年这三年的牛市中，红利ETF这样一个基金也能够获得超过100%的收益。这也就是意味着，很多人认为牛市中红利ETF跑不过科技股的言论是错误的，我的代码回测说明，这轮大牛市，红利ETF这样一个普通的基金的收益也达到了84.02%，并没有严重落后于当时的白马基金和科技股基金
+        # 显示交易的毛利率和净利润
+        self.log("交易中 毛利%.2f, 净利 %.2f, 手续费 %.2f" %
+            (trade.pnl, trade.pnlcomm, trade.commission))
 
-# 两个红利etf的差别很大
-# 招商中证红利ETF（基金代码515080）跟踪的指数是中证红利指数
-# 中证红利指数（沪市代码000922，深市代码399922）本身不能买，只能买ETF
-# 中证指数官网的全收益指数，就是官方给的复投收益
-#     https://www.csindex.com.cn/#/indices/family/detail?indexCode=000922
-#     https://www.csindex.com.cn/#/indices/family/detail?indexCode=399922 则无法访问
-#     其他指数也可以去查 https://www.csindex.com.cn/#/search?searchText=%E7%BA%A2%E5%88%A9
+class MACDStrategy(BaseStrategy):
+    lines = ('signal',)
+    def __init__(self):
+        super().__init__()
+        self.params.update(
+            dict(
+                p_fast = 5,     # 短周期：5日
+                p_slow = 10,    # 长周期：10日
+                p_dif = 7,      # dif -> dea 周期：7日
+            )
+        )
+        # 原参数为 12, 26, 9
+        # self.order_type = '1st&2nd order' # 可以修改
+        self.order_type = '0th order'
 
-# 像这里说的这样看：https://xueqiu.com/7072298555/365921360
+        # 初始化指标，比如简单均线
+        # self.ma_fast = bt.ind.SMA(self.data.close, period=self.params["p_fast"]) # 全称 bt.indicators.SimpleMovingAverage
+        # self.ma_slow = bt.ind.SMA(self.data.close, period=self.params["p_slow"]) # 全称 bt.indicators.SimpleMovingAverage
+        # 可以没有第一个参数，则默认是收盘价？
+        # 改成指数均线
+        self.ma_fast = bt.ind.EMA(self.data.close, period=self.params["p_fast"]) # 全称 bt.indicators.ExponentialMovingAverage
+        self.ma_slow = bt.ind.EMA(self.data.close, period=self.params["p_slow"]) # 全称 bt.indicators.ExponentialMovingAverage
+        self.dif = self.ma_fast - self.ma_slow # DIF = EMA_fast - EMA_slow
+        self.dea = bt.ind.EMA(self.dif, period=self.params["p_dif"]) # 全称 bt.indicators.ExponentialMovingAverage
+        self.macdhis = self.dif - self.dea
 
-# 1、看价格指数，就是不复投，就不选择衍生指数
-# 但是我选择了后，网页就出错，给不出结果
-# 还是只能看雪球：https://xueqiu.com/S/SH000922
+    def next(self):
+        # 如果还有订单在执行中，就不做新的仓位调整
+        if self.order:
+            return
 
-# 招商中证红利ETF（基金代码515080）跟踪的指数是中证红利指数
-# 雪球的结果和akshare东财的结果一样，都是不复权：因为指数本身没有分红和拆股
-# 4188.69 -> 5209.90
-# (5209.90 - 4188.69) / 4188.69 = 24.38%
-# 实际上应该加上分红，但是太多了不好算
+        # buy 和 sell 的默认参数
+        # 当size=None时，系统会通过策略的Sizer机制自动确定实际委托数量；
+        # 如果策略未显式设置Sizer，Backtrader会应用默认的SizerFix，其固定委托数量（stake）为1单位。
+        
+        # 更简单的方法
+        # self.order_target_percent(target=...) 按持仓百分比下单，“多退少补”原则，
+        # 对于股票当前无持仓或持有的是多单（size>=0）的情况，
+        # 若目标占比 target > 当前持仓占比，买入不够的部分；若目标占比 target < 当前持仓占比，卖出多余的部分。
+        # self.close() 表示平仓，也可以加上具体的参数，但默认是完全平仓
 
-# akshare接口给出的结果：
-# 东财接口：不能选择复权形式，结果是一样的
-# 新浪接口：不能选择开始和结束时间，而且返回的内容不全
+        # 买卖一手
+        # buy_size = sell_size = 100
+        
+        # 买卖全仓
+        commission_info = self.broker.getcommissioninfo(self.data)
+        cash = self.broker.get_cash() - commission_info.getsize(1, self.data.close[0])
+        buy_size = cash / self.data.close[0]
+        buy_size = int(buy_size * 0.95)
+        buy_size = downcast(buy_size, 100)
+        # 不打折扣的话，可能买入不进来：因为实际操作是第二天开盘才做，可能跳空高开：
+        # https://zhuanlan.zhihu.com/p/1896245068052034669
 
-# 2、看衍生指数
-# 约从 6549 到 8738
-# (8738 - 6549) / 6549 = 33.42%
-# 1、加上了分红，应该是主要增加的收益
-# 2、分红复投，这部分我算出来效果一直很低，可以忽略不计
+        sell_size = self.position.size
 
-# https://baijiahao.baidu.com/s?id=1851638647954504498&wfr=spider&for=pc
-#     其实净收益指数更真实，还考虑了扣税
-#     但是也差不多：加入了分红和复投
-# 中证红利全收益指数也有自己的代码：H00922
-# 那也可以直接去：https://www.csindex.com.cn/#/indices/family/detail?indexCode=H00922
-# 这里就不能选衍生指数了
-# 结果是一样的
+        # https://blog.csdn.net/weixin_52071682/article/details/116903559
+        # self.dataclose[0] # 当日的收盘价
+        # self.dataclose[-1] # 昨天的收盘价
+        # self.dataclose[-2] # 前天的收盘价
+        # 这一点我在一开始使用的时候也被作者的逻辑震惊了，原来还能这么设置   
 
-# 但是都不如ETF：结果比实际还好？买入持有跑出来51%的收益率
-# 因为跟踪误差吗？但都说易方达中证红利ETF（515180）是跟踪误差最低的一档的
-# 该基金通过完全复制法跟踪标的指数，以追求跟踪偏离度和跟踪误差的最小化。
+        if not self.position: # 没有持仓才买入
+            # 零阶逻辑（单均线策略）：价格上穿均线买入，下穿卖出
+            if self.order_type == '0th order':
+                if self.data.close[-1] < self.ma_slow[-1] and self.data.close[0] > self.ma_slow[0]:
+                    self.order = self.buy(size=buy_size)
+            # 一阶逻辑（双均线策略）：MA_fast 上穿 MA_slow 买入，下穿卖出（也就是双均线策略）
+            elif self.order_type == '1st order':
+                if self.ma_fast[-1] < self.ma_slow[-1] and self.ma_fast[0] > self.ma_slow[0]:
+                    self.order = self.buy(size=buy_size)
+            # 二阶逻辑（MACD策略）：DIF上穿DEA买入，下穿卖出
+            elif self.order_type == '2nd order':
+                if self.dif[-1] < self.dea[-1] and self.dif[0] > self.dea[0]:
+                    self.order = self.buy(size=buy_size)
+            # 一阶+二阶：零上DIF上穿DEA买入，零下DIF下穿DEA卖出
+            elif self.order_type == '1st&2nd order':
+                if self.ma_fast[0] > self.ma_slow[0] and self.dif[-1] < self.dea[-1] and self.dif[0] > self.dea[0]:
+                    self.order = self.buy(size=buy_size)
+        else: # 有持仓才卖出
+            # 零阶逻辑：价格上穿均线买入，下穿卖出
+            if self.order_type == '0th order':
+                if self.data.close[-1] > self.ma_slow[-1] and self.data.close[0] < self.ma_slow[0]:
+                    self.order = self.sell(size=sell_size)
+            # 一阶逻辑：MA_fast 上穿 MA_slow 买入，下穿卖出
+            elif self.order_type == '1st order':
+                if self.ma_fast[-1] > self.ma_slow[-1] and self.ma_fast[0] < self.ma_slow[0]:
+                    self.order = self.sell(size=sell_size)
+            # 二阶逻辑：DIF上穿DEA买入，下穿卖出
+            elif self.order_type == '2nd order':
+                if self.dif[-1] > self.dea[-1] and self.dif[0] < self.dea[0]:
+                    self.order = self.sell(size=sell_size)
+            # 一阶+二阶：零上DIF上穿DEA买入，零下DIF下穿DEA卖出
+            elif self.order_type == '1st&2nd order':
+                if self.ma_fast[0] < self.ma_slow[0] and self.dif[-1] > self.dea[-1] and self.dif[0] < self.dea[0]:
+                    self.order = self.sell(size=sell_size)
+        
+        # 还可以直接如下写，但我这么写发现会报错：
+        # self.crossover_2nd = bt.ind.CrossOver(self.dif, self.dea)  # 穿越信号，直接调用，没有下标索引了
+        # self.signal_1st = self.dif # 此时再调用 self.ma_fast - self.ma_slow 算出来就是一个数字？奇怪
+        # # 下面调用 self.crossover_2nd > 0 这种写法报错：
+        # # TypeError: __bool__ should return bool, returned LineOwnOperation
+        # if not self.position: # 没有持仓才买入
+        #     if self.signal_1st[0] > 0 and self.crossover_2nd > 0:  # 向上穿
+        #         self.order = self.buy(size=buy_size)
+        # else:
+        #     if self.signal_1st[0] < 0 and self.crossover_2nd < 0:  # 向下穿
+        #         self.order = self.sell(size=sell_size)
 
-# 这种etf也没有什么溢价率，所以也没必要引入净值来检验：也需要算复权/不复权净值
+# self.lines.signal = bt.ind.CrossOver(self.dif, self.dea)
+# https://zhuanlan.zhihu.com/p/6214432946
+# 还可以写一个类，继承 bt.Indicator
+# # 买入、卖出信号
+# ## 买入信号
+# self.buy_signal = bt.And(self.signal_1st > 0, self.crossover_2nd > 0)
+# ## 卖出信号
+# self.sell_signal = bt.And(self.signal_1st < 0, self.crossover_2nd < 0)
+# self.lines = {
+#     "signal": bt.Sum(self.buy_signal,self.sell_signal)
+# }
+# 添加交易信号
+# cerebro.add_signal(bt.SIGNAL_LONG, MACDSignal)
 
-# 问：怎么两个红利etf差距这么大呢？这个就这么猛，以至于网格交易又开始没有用了
-# 答：
-# 1、红利指数差别大
-# 这个阶段上证红利指数510880 分红不复投收益率 17.81%，中证红利指数515080 分红不复投收益率 35.84% 本来差距就大
-# 2、本基金早期的正跟踪误差大，所以etf收益率52%，赚得更多了
-# 以至于
-# 510880两年收益16%，年化7.7%
-# 515080两年收益50%，年化22.47%
-# 但后来稳定之后，515080的一年收益率也只有9%，跟之前的510880也差不多了
+import math
+class BuyAndHoldStrategy(BaseStrategy):
+    def __init__(self):
+        super().__init__()
 
-# 再测一下爸爸的工商银行 601398
-# 时间改到：2023年初-2024年末
+    def next(self):
+        # 增加当日分红
+        for data in self.datas:
+            cash_amount = data.dividend[0] * self.getposition(data=data).size # self.position.size 对于多只股票可能会混淆
+            self.broker.add_cash(cash_amount)
 
-# 更后来的结论：https://xueqiu.com/5610083273/323472673
-# 510880，一个最老最普通的红利etf，从2014年1月1日到2024年12月31日，分红复投收益2.68倍，还看啥雪球，分红复投就行了
-# （这个值我还没有测，感觉不靠谱啊）
-# 下面回帖又说15.8倍，分红复投：这个值又是怎么来的？
-# 也有人质疑：
-# 应该去查 https://www.csindex.com.cn/#/search?searchText=%E7%BA%A2%E5%88%A9
-# 中证指数官网的全收益指数，只是这里看不到510880
-# 得换一个，例如中证红利：中证红利指数（沪市代码000922但似乎会重名冲突，深市代码399922）
-# https://www.csindex.com.cn/#/indices/family/detail?indexCode=000922
-# 像这里说的这样看：https://xueqiu.com/7072298555/365921360
-# 从 7549 到 8738，增长15.75%：就这样看吗？
+        # 如果还有订单在执行中，就不做新的仓位调整
+        if self.order:
+            return
+
+        if not self.position:
+            num_stocks = len(self.datas)
+            for data in self.datas:
+                init_price = data.open[0]
+                # 默认情况下， buy()和sell()不带参数时等同于 exectype=bt.Order.Market
+                # 表示以 下一个Bar的开盘价 成交
+                self.buy(size=math.floor(1 / num_stocks * start_cash / init_price))
+                # 其他订单类型包括：
+                # 市价到收盘单（exectype=bt.Order.Close）：以下一个Bar的收盘价成交。
+                # 止损单（exectype=bt.Order.Stop）：当价格触及止损价时以市价成交。
+                # 止损限价单（exectype=bt.Order.StopLimit）：先以止损价触发，再以限价成交。
+
+# 轮动策略
+class ETFMomentumRotationStrategy(BaseStrategy):
+    def __init__(self):
+        super().__init__()
+        self.params.update(
+            dict(
+                period = 12,      # 动量周期
+                num_hold = 3,     # 选择动量前3，平均分配仓位
+                t_plus = 1,       # 交易周期，这里设置是每天
+            )
+        )
+        self.days_counter = 0     # TODO：更高级的用法是backtrader的add_timer
+
+        # self.roc = dict()
+        # for data in self.datas:
+        #     self.roc[data] = bt.ind.ROC(data, period=self.params['period']) # 可以直接这样搞
+        # 加了这一段，哪怕没有使用它，收益率也降了？？？
+        # 初始资金: 100000.00
+        # 最终资金: 150681.83
+        # 净收益: 50681.83
+        # ROI: 50.68%
+        
+        # 没有加的话，收益总是更高
+        # 初始资金: 100000.00
+        # 最终资金: 151987.51
+        # 净收益: 51987.51
+        # ROI: 51.99%
+
+        # 说明在 bt.ind.ROC 做计算的过程中，就修改了data数据的内容！可能是对于价格做了某些分级别的四舍五入
+        # 如果改成下面这样，那得到的ROI还是51.99%
+        # for data in self.datas:
+        #     import copy
+        #     new_data = copy.deepcopy(data)
+        #     self.roc[data] = bt.ind.ROC(new_data, period=self.params['period']) # 可以直接这样搞
+        # 误差一个多点本身还好，但是给人的感觉就不靠谱了
+
+        # ai也认为：如果参数微调导致结果剧变，该策略大概率存在“过拟合”（Overfitting）或“参数孤岛”问题，回测结果不可信。
+        # 这种现象通常被称为策略的鲁棒性（Robustness）不足。
+        # 参数平原： 当你把参数（如均线周期）从 20 调到 22，收益率应只有小幅波动，而不是从盈利变成亏损。
+
+    def next(self):
+        if len(self.datas[0].open) < self.params['period']: # 对于前N天前的数据，历史积累时间都还不够
+            return # 则直接跳过
+            # 如果前面已经设置了 self.roc 则系统会检测到数据的缺失，自动从N+1天开始，则这一段就不会触发了
+
+        self.days_counter += 1 # 每个交易日+=1
+        if self.days_counter == self.params['t_plus']:
+            # 定义1、当天的收盘价相对于N天前的开盘价
+            # https://zhuanlan.zhihu.com/p/716627839
+            # 也是以下代码的来源。有一些问题，我修改了
+            # 候选池里的五个：
+            # 黄金(ETF基金:518880)
+            # 纳指(ETF基金:513100)
+            # 创业板(ETF基金:159915)
+            # 沪深300(ETF基金:510300)
+            # 标普500(ETF基金:513500)
+            
+            # 定义2、采用的是当前的收盘价相对于N天前的收盘价
+            # 这个是基于 akshare 的
+            # https://www.zhihu.com/question/9028560438/answer/1982504988551948180
+            # 或者看这个基于 qstock 的 https://zhuanlan.zhihu.com/p/646860740
+            # 两个版本跑出来的结果基本一致？
+            # 但是这个代码不全，都没有讲具体怎么买的
+            # 候选池里的四个：
+            # 510300：沪深300ETF，代表大盘
+            # 510500：中证500ETF，代表小盘
+            # 510880：红利ETF，代表价值
+            # 159915：创业板ETF，代表成长
+            # 后来又修改成了四个：
+            # 510880：红利ETF，代表价值
+            # 159915：创业板ETF，代表成长
+            # 513100：纳指ETF，代表外盘
+            # 518880：黄金ETF，代表商品
+
+            # 定义3、采用 linregress 对于过去若干天进行线性拟合
+            # https://zhuanlan.zhihu.com/p/321149887
+            # 这个选择的etf更多更特别
+            # 而且用到了 add_timer 的高级用法
+            # 但是只有代码，没有结果，看看就好了
+
+            momenta = [
+                (data.open[0] / data.open[-self.params['period']] - 1, data) # 开盘价相对于开盘价的ROC，则 ROI: 55.44%，更高
+                # (data.close[0] / data.open[-self.params['period']] - 1, data) # 收盘价相对于开盘价的ROC，则 ROI为 51.99%，这是原版代码里面写的
+                # (data.close[0] / data.close[-self.params['period']] - 1, data) # 如果是收盘价相对于收盘价的ROC，则 ROI降到: 38.82%
+                # (self.roc[data][0], data) # 这里计算结果是一样的，ROI: 38.82%
+                    for data in self.datas # 计算每一天收盘价相对于N天前开盘价的收益率
+            ]
+            all_negative = all(momentum[0] < 0 for momentum in momenta)
+
+            if all_negative: # 全部都负的话，使用动量的绝对值进行排序：负得越多的越买？TODO
+                momenta.sort(key=lambda momentum: abs(momentum[0]), reverse=True)
+            else: # 正常排序
+                momenta.sort(key=lambda momentum: momentum[0], reverse=True)
+
+            # 使用调整仓位的函数，而不是先卖再买：白交两次手续费
+            # 对于排名在num之后的ETF，清空其仓位。
+            for momentum, data in momenta[self.params['num_hold']:]:
+                self.order_target_size(data, 0) # 或者直接 self.close(data)
+
+            # 对于选中的ETF，按照1/num的比例分配仓位。
+            for momentum, data in momenta[:self.params['num_hold']]:
+                self.order_target_percent(data, 1 / self.params['num_hold'] * 0.95) # 不然发现有时无法买进
+                # TODO：downcast
+
+            self.days_counter = 0
+
+# 2. 创建Cerebro引擎
+# 又叫做：
+# 实例化大脑
+cerebro = bt.Cerebro()
+# cerebro.addstrategy(MACDStrategy)
+cerebro.addstrategy(BuyAndHoldStrategy)
+# cerebro.addstrategy(ETFMomentumRotationStrategy)
+
+# 此外，还可以通过 analyzers 策略分析模块和 observers 观测器模块提前配置好要返回的回测结果，
+# 比如想要返回策略的收益率序列、常规的策略评价指标，就可以提前将指标添加给大脑：
+# cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='pnl'）# 返回收益率时序数据
+# cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+# cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown') # 最大回撤
+# cerebro.addanalyzer(bt.analyzers.AnnualReturn, _name='_AnnualReturn') # 年化收益率
+# cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='_SharpeRatio') # 夏普比率
+# cerebro.addanalyzer(bt.analyzers.DrawDown, name='DrawDown') # 回撤
+# cerebro.addanalyzer(bt.analyzers.PyFolio, _name="PyFolio")
+
+# 还可以添加观测器
+# cerebro.addobserver(...)
+
+# 3. 加载数据（以CSV为例）
+# 方法1、从离线文件加载，暂时不采用
+# data = bt.feeds.GenericCSVData(
+#     dataname='your_data.csv',  # 请替换成你的CSV路径
+#     dtformat='%Y-%m-%d',
+#     timeframe=bt.TimeFrame.Days,
+#     openinterest=-1,
+#     volume=-1,
+#     open=1,
+#     high=2,
+#     low=3,
+#     close=4,
+#     datetime=0
+# )
+# cerebro.adddata(data)
+
+# 方法2、从接口api加载
+fq_type = ''
 
 import akshare as ak
+# start_date = "20220701"
+# end_date = "20250701"
+start_date = "20230101"
+end_date = "20241231"
+# start_date = "20200101"
+# end_date = "20240801"
+
 import pandas as pd
-import itertools
-import numpy as np
-from tqdm import tqdm # 用于显示进度条
-# 参数搜索空间设置
-param_grid = {
-    'initial_ratio': np.arange(0, 1, 0.1), # 初始仓位比例 40%-70%，现在修改成了0-100%
-    'rise_threshold': np.arange(0.02, 0.2, 0.02), # 上涨阈值 2%-10%，现在修改成了2%-20%
-    'fall_threshold': np.arange(0.02, 0.2, 0.02), # 下跌阈值 2%-10%，现在修改成了2%-20%
-    'trade_ratio': np.arange(0.01, 0.3, 0.05) # 交易比例 5%-20%，现在修改成了10%-30%
-}
-# 生成所有参数组合
-all_params = list(itertools.product(*param_grid.values()))
-# all_params = all_params[0:1] # 用于测试是否能跑通
+# pd.set_option('display.max_rows', None)  # 不限制行数
+# pd.set_option('display.max_columns', None)  # 不限制列数
+# pd.set_option('display.width', None)  # 不限制输出宽度
+from_date = pd.Timestamp(start_date)
+to_date = pd.Timestamp(end_date)
 
-# 获取510880历史数据（使用前复权以准确计算分红）
-# $红利ETF(SH510880)$
-# $红利低波50ETF(SH515450)$
-# 沪深300指数不能直接购买
-# 红利ETF、沪深300ETF也有分红
-# 但是股指期货没有分红
+# qfq，新浪接口
+# 初始资金: 100000.00
+# 最终资金: 148878.45
+# 净收益: 48878.45
+# ROI: 48.88%
 
-fq_type = '' # '': 不复权 / 'qfq': 前复权 / 'hfq': 后复权
-if_reinvest = False # 复投 / 不复投
-def get_fund_data():
-    # 1. 510880 中证红利
-    # fund_hist = ak.fund_etf_hist_em( # TODO：这里有风险，是东财接口，用的是加减复权，不是比例复权
-    #     symbol="510880", period="daily",
-    #     start_date="20190408", end_date="20211231",
-    #     adjust=fq_type
-    # )
-    # fund_hist['日期'] = pd.to_datetime(fund_hist['日期'])
+# hfq，新浪接口
+# 初始资金: 100000.00
+# 最终资金: 148894.49
+# 净收益: 48894.49
+# ROI: 48.89%
 
-    # fund_hist = ak.stock_zh_a_daily( # 换成了新浪的接口，但目前只能用于不复权
-    #     symbol="sh"+"510880",
-    #     start_date="20191201", end_date="20211231",
-    #     adjust=fq_type
-    # )
-    # 而且需要我对代码做hack，才能处理基金而不是股票
-    # /opt/homebrew/Caskroom/miniconda/base/envs/quant-python-3.9/lib/python3.9/site-packages/akshare/stock/stock_zh_a_sina.py
-    # 中修改：
-    # if adjust == "":
-    #     if not pd.api.types.is_datetime64_any_dtype(temp_df.index[0]): # 是基金，类型是 <class 'datetime.date'>
-    #         temp_df.index = pd.to_datetime(temp_df.index) # 转化成 <class 'pandas._libs.tslibs.timestamps.Timestamp'>
-    #         temp_df.drop(columns=['outstanding_share', 'turnover'], inplace=True) # 因为内容都是nan
-    #     temp_df = temp_df[start_date:end_date]
-    #     temp_df.drop_duplicates(
-    #         subset=["open", "high", "low", "close", "volume", "amount"], inplace=True
-    #     )
-    # fund_hist['日期'] = pd.to_datetime(fund_hist['date'])
-    # fund_hist['收盘'] = fund_hist['close']
-    # fund_hist['最高'] = fund_hist['high']
-    # fund_hist['最低'] = fund_hist['low']
+# 不复权
+# 初始资金: 100000.00
+# 最终资金: 137601.52
+# 净收益: 37601.52
+# ROI: 37.60%
 
-    # 手动录入分红数据（数据来源：基金公告）
-    # 分红信息核实：华泰柏瑞上证红利ETF (510880)
-    # https://fundf10.eastmoney.com/fhsp_510880.html
-    # 或者 https://www.dayfund.cn/fundfh/510880.html
-    # 但是对不上啊？
-    # 华泰柏瑞上证红利ETF联接A (012761) 也不对
-    # https://fundf10.eastmoney.com/fhsp_012761.html
-    # 或者 https://www.dayfund.cn/fundfh/012761.html
-    # 原来代码中错误的数据我删掉了
-    # 修正之后应该是
-    # 每份派现金0.0980元，分红发放日2019-01-21
-    # 每份派现金0.1440元，分红发放日2020-01-22
-    # 每份派现金0.1410元，分红发放日2021-01-21
-    # 其实还是不对：应该是分红发放日发钱，而不是除权除息日
-    # 暂且不管了，就在这里填上权益登记日吧，因为这一天之后的除权除息日，股价会突变
-    # etf_dividend_data = [
-    #     {'除权除息日': '2019-01-15', '每份分红': 0.098}, # 2019年分红
-    #     {'除权除息日': '2020-01-16', '每份分红': 0.144}, # 2020年分红
-    #     {'除权除息日': '2021-01-15', '每份分红': 0.141} # 2021年分红
-    # ]
+# 但是正确答案应该是接近100%！
+
+# 怎么回事？？？
+# 1、只交易一次，费率可以忽略不计
+# 2、而且因为是全仓计算比例，所以采用前复权或者后复权价格都可以，反正结果是等比缩放的
+# 不过以后还是应该用不复权价格吧！因为这样买的股票才是真实的价格
+
+# 1. 自定义 Data 类
+class PandasDataWithDividend(bt.feeds.PandasData):
+    # 添加自定义的 line 名称
+    lines = ('dividend',) 
     
-    # 2. 515080 招商中证红利ETF (515080)：换一个红利etf
-    # https://fundf10.eastmoney.com/fhsp_515080.html
-    # fund_hist = ak.fund_etf_hist_em( # TODO：这里有风险，是东财接口，用的是加减复权，不是比例复权
-    #     symbol="515080", period="daily", # TODO: 这里换一个红利etf，差别就特别大！
-    #     start_date="20190408", end_date="20211231",
-    #     adjust=fq_type
-    # )
-    fund_hist = ak.stock_zh_a_daily( # 换成了新浪的接口，但目前只能用于不复权
-        symbol="sh"+"515080",
-        # start_date="20191201", end_date="20211231",
-        start_date="20240110", end_date="20250110",
-        adjust=fq_type
+    # 建立参数映射：-1 表示按位置自动匹配，或者指定 DataFrame 中的列名
+    params = (
+        ('dividend', -1), # 对应 DataFrame 中名为 'dividend' 的列
     )
-    fund_hist['日期'] = pd.to_datetime(fund_hist['date'])
-    fund_hist['收盘'] = fund_hist['close']
-    fund_hist['最高'] = fund_hist['high']
-    fund_hist['最低'] = fund_hist['low']
+
+# 用 DataFeeds 模块导入DataFrame 数据框必须依次包含7个字段
+# 'datetime'、 'open'、'high'、'low'、'close'、'volume'、'openinterest'
+# 所以下面两个接口都需要对列名进行修改
+
+# 1. 东财接口
+# fund_hist = ak.fund_etf_hist_em( # TODO：这里有风险，是东财接口，用的是加减复权，不是比例复权
+#     symbol="601398", period="daily",
+#     start_date=start_date, end_date=end_date,
+#     adjust=fq_type
+# )
+# fund_hist['datetime'] = pd.to_datetime(fund_hist['日期'])
+# fund_hist['open'] = fund_hist['开盘']
+# fund_hist['close'] = fund_hist['收盘']
+# fund_hist['high'] = fund_hist['最高']
+# fund_hist['low'] = fund_hist['最低']
+# fund_hist['volume'] = fund_hist['成交量']
+# fund_hist['openinterest'] = 0 # TODO: akshare不提供：未平仓合约的数量（Open Interest）
+
+# 2. 新浪接口
+fund_hist = ak.stock_zh_a_daily( # 换成了新浪的接口
+    symbol="sh"+"601398",
+    start_date=start_date, end_date=end_date, # 爸爸的操作时间比我以为的更长
+    adjust=fq_type
+)
+fund_hist['dividend'] = 0.0 # 是小数
+if fq_type == '':
     etf_dividend_data = [
-        {'除权除息日': '2020-11-27', '每份分红': 0.060}, # 2020年分红
-        {'除权除息日': '2021-06-17', '每份分红': 0.030}, # 2021年分红
-        {'除权除息日': '2021-12-08', '每份分红': 0.030}, # 2021年分红
-        {'除权除息日': '2022-06-24', '每份分红': 0.030},
-        {'除权除息日': '2022-11-28', '每份分红': 0.030},
-        {'除权除息日': '2023-06-15', '每份分红': 0.035},
-        {'除权除息日': '2023-11-30', '每份分红': 0.035},
-        {'除权除息日': '2024-03-27', '每份分红': 0.015},
-        {'除权除息日': '2024-06-28', '每份分红': 0.020},
-        {'除权除息日': '2024-09-19', '每份分红': 0.015},
-        {'除权除息日': '2024-11-29', '每份分红': 0.020},
-        {'除权除息日': '2025-03-18', '每份分红': 0.015},
-        {'除权除息日': '2025-06-16', '每份分红': 0.015},
-        {'除权除息日': '2025-09-16', '每份分红': 0.015},
-        {'除权除息日': '2025-12-17', '每份分红': 0.020},
+        {'除权除息日': '2019-06-29', '每份分红': 0.2628},
+        {'除权除息日': '2020-07-05', '每份分红': 0.266},
+        {'除权除息日': '2021-07-11', '每份分红': 0.2933},
+        {'除权除息日': '2022-07-14', '每份分红': 0.3035},
+        # 2023没有
+        {'除权除息日': '2024-07-15', '每份分红': 0.3064},
+        {'除权除息日': '2025-01-06', '每份分红': 0.1434},
+        {'除权除息日': '2025-07-11', '每份分红': 0.1646},
+        {'除权除息日': '2025-12-12', '每份分红': 0.1414},
     ]
 
-    # 3. 601398 工商银行
-    # https://data.eastmoney.com/yjfp/detail/601398.html
-    # https://basic.10jqka.com.cn/mobile/601398/bonusn.html
-    # fund_hist = ak.fund_etf_hist_em( # TODO：这里有风险，是东财接口，用的是加减复权，不是比例复权
-    #     symbol="601398", period="daily",
-    #     start_date="20230101", end_date="20241231",
-    #     adjust=fq_type
-    # )
-    # fund_hist['日期'] = pd.to_datetime(fund_hist['日期'])
+    import datetime
+    for etf_dividend in etf_dividend_data:
+        date = datetime.datetime.strptime(etf_dividend['除权除息日'], "%Y-%m-%d").date()
+        dividend = etf_dividend['每份分红']
+        fund_hist.loc[fund_hist['date'] == date, 'dividend'] = dividend
 
-    # fund_hist = ak.stock_zh_a_daily( # 换成了新浪的接口
-    #     symbol="sh"+"601398",
-    #     # start_date="20230101", end_date="20241231",
-    #     start_date="20220701", end_date="20250701", # 爸爸的操作时间比我以为的更长
-    #     adjust=fq_type
-    # )
-    # fund_hist['日期'] = pd.to_datetime(fund_hist['date'])
-    # fund_hist['收盘'] = fund_hist['close']
-    # fund_hist['最高'] = fund_hist['high']
-    # fund_hist['最低'] = fund_hist['low']
-    
-    # etf_dividend_data = [
-    #     {'除权除息日': '2019-06-29', '每份分红': 0.2628},
-    #     {'除权除息日': '2020-07-05', '每份分红': 0.266},
-    #     {'除权除息日': '2021-07-11', '每份分红': 0.2933},
-    #     {'除权除息日': '2022-07-14', '每份分红': 0.3035},
-    #     # 2023没有
-    #     {'除权除息日': '2024-07-15', '每份分红': 0.3064},
-    #     {'除权除息日': '2025-01-06', '每份分红': 0.1434},
-    #     {'除权除息日': '2025-07-11', '每份分红': 0.1646},
-    #     {'除权除息日': '2025-12-12', '每份分红': 0.1414},
-    # ]
+fund_hist['datetime'] = pd.to_datetime(fund_hist['date'])
+fund_hist['openinterest'] = 0 # TODO: akshare不提供：未平仓合约的数量（Open Interest）
 
-    # 设定完成后，得到结果
-    dividend_df = pd.DataFrame(etf_dividend_data)
-    dividend_df['除权除息日'] = pd.to_datetime(dividend_df['除权除息日'])
-    return fund_hist.sort_values('日期').reset_index(drop=True), dividend_df
+# 加载到 cerebro 中
+fund_hist.set_index("datetime", inplace=True) # 需要修改index为datetime这一列
+# 增加了分红一项
+data = PandasDataWithDividend(dataname=fund_hist, fromdate=from_date, todate=to_date)
+cerebro.adddata(data)
 
-# 带分红处理的网格策略回测
-# 四个参数是定死的，相当于一个固定参数的 optimized_grid_trading
-# 所以这个函数其实不用跑
-def grid_trading_backtest(data, dividend_df):
-    initial_capital = 500000
-    initial_ratio = 0.6
-    rise_threshold = 0.1
-    fall_threshold = 0.1
-    trade_ratio = 0.05
-    # 初始化持仓
-    first_day = data.iloc[0]
-    base_price = first_day['收盘']
-    shares = (initial_capital * initial_ratio) / base_price
-    cash = initial_capital * (1 - initial_ratio)
-    history = []
-    dividend_log = []
-    # 创建日期索引
-    date_index = data['日期'].dt.date
-    dividend_dates = dividend_df['除权除息日'].dt.date.values
-    for i in range(len(data)):
-        row = data.iloc[i]
-        current_date = row['日期']
-        current_price = row['收盘']
-        if fq_type == '':
-            # 处理分红（T日除权）
-            if current_date.date() in dividend_dates:
-                div_info = dividend_df[dividend_df['除权除息日'].dt.date == current_date.date()].iloc[0]
-                per_share_div = div_info['每份分红']
-                # 计算分红金额
-                dividend_cash = shares * per_share_div
-                if if_reinvest:
-                    # 红利再投资（以收盘价买入）
-                    # 我的修改：分红的金额不是全买成股票了吗，为什么cash要加？
-                    reinvest_shares = dividend_cash / current_price
-                    shares += reinvest_shares
-                    dividend_log.append(('Dividend', current_date, current_price, reinvest_shares))
-                else:
-                    cash += dividend_cash
-                    dividend_log.append(('Dividend', current_date, current_price, dividend_cash))
-        elif fq_type in ['qfq', 'hfq']:
-            # 后复权直接把结果算好了，不需要自己处理了
-            # 如果后复权要与 不复权+手动模拟分红复投 对齐的话，就需要调整
-            # 不复权的股价变低，股票份额变多
-            # 1、trade_ratio：采用后复权，则买卖的股票份额也要打折扣
-            # 其实应该是用不复权的价格，对于 current_price 进行分红调整
-            # 不过其实复权后一股3元左右，每份现金分红0.01-0.014元左右，影响0.33-0.5%，跑出来结果相差不大
-            # 2、base_price：也需要调整，但是调整的影响应该也不大
-            if current_date.date() in dividend_dates:
-                dividend_log.append(('Dividend', current_date, current_price))
-                div_info = dividend_df[dividend_df['除权除息日'].dt.date == current_date.date()].iloc[0]
-                trade_ratio *= (current_price - div_info['每份分红']) / current_price
-        # 跳过第一天交易
-        if i == 0:
-            continue
-        # 网格交易逻辑
-        # TODO：也没有计算交易成本
-        # 针对上一次买入的价格进行调整，这里采用的是比例而不是加减
-        if current_price >= base_price * (1 + rise_threshold):
-            # 卖出逻辑（保守用最低价）
-            execute_price = row['最低']
-            sell_shares = shares * trade_ratio
-            if sell_shares > 0:
-                sell_value = sell_shares * execute_price
-                cash += sell_value
-                shares -= sell_shares
-                base_price = execute_price
-                history.append(('Sell', current_date, execute_price, sell_shares))
-        elif current_price <= base_price * (1 - fall_threshold):
-            # 买入逻辑（保守用最高价）
-            execute_price = row['最高']
-            buy_value = cash * trade_ratio
-            if 0 < buy_value <= cash:
-                buy_shares = buy_value / execute_price
-                cash -= buy_value
-                shares += buy_shares
-                base_price = execute_price
-                history.append(('Buy', current_date, execute_price, buy_shares))
-    
-    final_value = shares * data.iloc[-1]['收盘'] + cash
-    return final_value, history, dividend_log
+# 暂时还是使用东财接口，处理轮动资产
+# stock_lists = ['518880', '513100', '159915', '510300', '513500'] # 发现第一个黄金和第三个创业板是拖后腿的
+# stock_lists = ['513100', '159915', '510300', '513500'] # 删掉第一个黄金：收益变高了
+# stock_lists = ['518880', '513100', '510300', '513500'] # 删掉第三个创业板：收益变高了
+# stock_lists = ['513100', '510300', '513500'] # 但是两者都删除的话，变成买入持有，则效果又略微变差了一点
+# for stock in stock_lists:
+#     fund_hist = ak.fund_etf_hist_em(
+#         symbol=stock, period="daily",
+#         start_date=start_date, end_date=end_date,
+#         adjust=fq_type
+#     )
+#     fund_hist['datetime'] = pd.to_datetime(fund_hist["日期"])
+#     fund_hist['open'] = fund_hist['开盘']
+#     fund_hist['close'] = fund_hist['收盘']
+#     fund_hist['high'] = fund_hist['最高']
+#     fund_hist['low'] = fund_hist['最低']
+#     fund_hist['volume'] = fund_hist['成交量']
+#     fund_hist['openinterest'] = 0
+#     fund_hist.set_index("datetime", inplace=True)
+#     data = bt.feeds.PandasData(dataname=fund_hist, fromdate=from_date, todate=to_date)
+#     cerebro.adddata(data, name=stock)  #数据投喂
 
-# 带分红的买入持有策略
-def buy_and_hold(data, dividend_df):
-    initial_capital = 500000
-    initial_ratio = 1
-    # 初始买入
-    first_day = data.iloc[0]
-    shares = (initial_capital * initial_ratio) / first_day['收盘']
-    cash = initial_capital * (1 - initial_ratio)
-    # 处理分红
-    dividend_dates = dividend_df['除权除息日'].dt.date.values
-    for i in range(len(data)):
-        row = data.iloc[i]
-        current_price = row['收盘']
-        if fq_type == '':
-            if row['日期'].date() in dividend_dates:
-                div_info = dividend_df[dividend_df['除权除息日'].dt.date == row['日期'].date()].iloc[0]
-                per_share_div = div_info['每份分红']
-                dividend_cash = shares * per_share_div
-                if if_reinvest:
-                    # 红利再投资
-                    # 我的修改：分红的金额不是全买成股票了吗，为什么cash要加？
-                    reinvest_shares = dividend_cash / current_price
-                    shares += reinvest_shares
-                else:
-                    cash += dividend_cash                
-        # elif fq_type in ['qfq', 'hfq']:
-        #     # 后复权直接把结果算好了，不需要自己处理了
-        #     # 如果后复权要与 不复权+手动模拟分红复投 对齐的话，就需要调整
-        #     # 不复权的股价变低，股票份额变多
-        #     # 1、trade_ratio：采用后复权，则买卖的股票份额也要打折扣
-        #     # 其实应该是用不复权的价格，对于 current_price 进行分红调整
-        #     # 不过其实复权后一股3元左右，每份现金分红0.01-0.014元左右，影响0.33-0.5%，跑出来结果相差不大
-        #     # 2、base_price：也需要调整，但是调整的影响应该也不大
-        #     if row['日期'].date() in dividend_dates:
-        #         div_info = dividend_df[dividend_df['除权除息日'].dt.date == row['日期'].date()].iloc[0]
-        #         trade_ratio *= (current_price - div_info['每份分红']) / current_price
-        # 买入持有不需要 trade_ratio 和 base_price
-    final_value = shares * data.iloc[-1]['收盘'] + cash
-    return final_value
+# 4. 设置初始资金和费率（以及滑点）
+start_cash = 100000
+cerebro.broker.setcash(start_cash)
+cerebro.broker.setcommission(commission=0.0001) # 双边佣金
+# cerebro.broker.set_slippage_perc(perc=0.001) # 双边滑点
 
-# 优化后的回测函数（参数可配置）
-def optimized_grid_trading(data, dividend_df, params):
-    initial_ratio, rise_threshold, fall_threshold, trade_ratio = params
-    initial_capital = 500000
-    first_day = data.iloc[0]
-    base_price = first_day['收盘']
-    shares = (initial_capital * initial_ratio) / base_price
-    cash = initial_capital * (1 - initial_ratio)
-    history = []
-    dividend_log = []
-    dividend_dates = dividend_df['除权除息日'].dt.date.values
-    for i in range(len(data)):
-        row = data.iloc[i]
-        current_date = row['日期']
-        current_price = row['收盘']
-        if fq_type == '':
-            # 处理分红
-            if current_date.date() in dividend_dates:
-                div_info = dividend_df[dividend_df['除权除息日'].dt.date == current_date.date()].iloc[0]
-                per_share_div = div_info['每份分红']
-                dividend_cash = shares * per_share_div
-                if if_reinvest:
-                    # 我的修改：分红的金额不是全买成股票了吗，为什么cash要加？
-                    reinvest_shares = dividend_cash / current_price
-                    shares += reinvest_shares
-                else:
-                    cash += dividend_cash                
-        elif fq_type in ['qfq', 'hfq']:
-            # 后复权直接把结果算好了，不需要自己处理了
-            # 如果后复权要与 不复权+手动模拟分红复投 对齐的话，就需要调整
-            # 不复权的股价变低，股票份额变多
-            # 1、trade_ratio：采用后复权，则买卖的股票份额也要打折扣
-            # 其实应该是用不复权的价格，对于 current_price 进行分红调整
-            # 不过其实复权后一股3元左右，每份现金分红0.01-0.014元左右，影响0.33-0.5%，跑出来结果相差不大
-            # 2、base_price：也需要调整，但是调整的影响应该也不大
-            if current_date.date() in dividend_dates:
-                div_info = dividend_df[dividend_df['除权除息日'].dt.date == current_date.date()].iloc[0]
-                trade_ratio *= (current_price - div_info['每份分红']) / current_price
-        if i == 0:
-            continue
-        # 网格交易逻辑
-        # TODO：也没有计算交易成本
-        # 针对上一次买入的价格进行调整，这里采用的是比例而不是加减
-        if current_price >= base_price * (1 + rise_threshold):
-            execute_price = row['最低']
-            sell_shares = shares * trade_ratio
-            if sell_shares > 1e-4: # 防止微小交易
-                sell_value = sell_shares * execute_price
-                cash += sell_value
-                shares -= sell_shares
-                base_price = execute_price
-                history.append(('Sell', current_date, execute_price, sell_shares))
-        elif current_price <= base_price * (1 - fall_threshold):
-            execute_price = row['最高']
-            buy_value = cash * trade_ratio
-            if 1e-4 < buy_value <= cash:
-                buy_shares = buy_value / execute_price
-                cash -= buy_value
-                shares += buy_shares
-                base_price = execute_price
-                history.append(('Buy', current_date, execute_price, buy_shares))
-    final_value = shares * data.iloc[-1]['收盘'] + cash
-    return {
-        'final_value': final_value,
-        'return_rate': (final_value / 500000 - 1) * 100,
-        'trade_count': len(history),
-        'params': params
-    }
+# 5. 启动回测
+cerebro.run()
 
-# 执行回测
-price_data, dividend_data = get_fund_data()
-# 执行参数优化
-results = []
-for params in tqdm(all_params, desc="参数优化进度"):
-    try:
-        result = optimized_grid_trading(price_data, dividend_data, params)
-        results.append(result)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"参数 {params} 执行失败: {str(e)}")
+# 对于轮动策略
 
-# 转换为DataFrame便于分析
-results_df = pd.DataFrame(results)
-# 找出最优参数组合（按收益率排序）
-best_result = results_df.loc[results_df['return_rate'].idxmax()]
-# 网格策略
-# grid_final, grid_trades, dividends = grid_trading_backtest(price_data, dividend_data)
-# grid_return = grid_final - 500000
-# grid_rate = (grid_final / 500000 - 1) * 100
-# 买入持有策略
-bh_final = buy_and_hold(price_data, dividend_data)
-bh_return = bh_final - 500000
-bh_rate = (bh_final / 500000 - 1) * 100
-# 输出结果
-# print(f"【网格策略】")
-# print(f"最终资产: {grid_final:.2f} 元")
-# print(f"总收益: {grid_return:.2f} 元")
-# print(f"收益率: {grid_rate:.2f}%")
-# print(f"交易次数: {len(grid_trades)} 次")
-# print(f"分红处理次数: {len(dividends)} 次\n")
-print(f"【买入持有策略】")
-print(f"最终资产: {bh_final:.2f} 元")
-print(f"总收益: {bh_return:.2f} 元")
-print(f"收益率: {bh_rate:.2f}%\n")
-# print(f"【超额收益】")
-# print(f"超额收益: {grid_return - bh_return:.2f} 元")
-# print(f"超额收益率: {grid_rate - bh_rate:.2f}%")
-# 输出最近交易记录
-# print("\n【最近5次交易记录】")
-# for trade in grid_trades[-5:]:
-#     print(f"{trade[1].strftime('%Y-%m-%d')} {trade[0]} 价格:{trade[2]:.3f} 份额:{trade[3]:.2f}")
-# 输出分红记录
-# print("\n【分红再投资记录】")
-# for d in dividends:
-#     print(f"{d[1].strftime('%Y-%m-%d')} 分红再投资 {d[3]:.2f}份 @ {d[2]:.3f}")
-# 显示优化结果
-print("\n=== 最优参数组合 ===")
-print(f"初始仓位比例: {best_result['params'][0]:.0%}")
-print(f"上涨阈值: {best_result['params'][1]:.0%}")
-print(f"下跌阈值: {best_result['params'][2]:.0%}")
-print(f"交易比例: {best_result['params'][3]:.0%}")
-print(f"\n预期收益率: {best_result['return_rate']:.2f}%")
-print(f"交易次数: {best_result['trade_count']} 次")
-# 执行最优参数回测
-print("\n=== 最优策略详细回测 ===")
-best_params = best_result['params']
-detailed_result = optimized_grid_trading(price_data, dividend_data, best_params)
-# 与买入持有策略对比
-print(f"\n【网格策略】")
-print(f"最终收益率: {detailed_result['return_rate']:.2f}%")
-print(f"【买入持有策略】")
-print(f"最终收益率: {bh_rate:.2f}%")
-print(f"超额收益率: {detailed_result['return_rate'] - bh_rate:.2f}%")
+# 佣金为0时，初始资金: 100000.00
+# 最终资金: 114040.20
+# 净收益: 14040.20
+# ROI: 14.04%
+# 还是低了些
+
+# 佣金为万2时
+# 初始资金: 100000.00
+# 最终资金: 108838.79
+# 净收益: 8838.79
+# ROI: 8.84%
+
+# 佣金为万20时，是倒亏的
+# 初始资金: 100000.00
+# 最终资金: 71744.54
+# 净收益: -28255.46
+# ROI: -28.26%
+
+# cerebro.broker.set_slippage_perc(perc=0.001) # 双边滑点
+
+# 5. 启动回测
+# cerebro.run()
+
+# 可视化，不能写在stop里，需要写在 cerebro.run() 后面
+# cerebro.plot(iplot=False,
+#     style="line", # 绘制线型价格走势，可改为"candelstick" 样式
+#     # lcolors=colors,
+#     plotdist=0.1,
+#     bartrans=0.2,
+#     volup="#ff9896",
+#     voldown="#98df8a",
+#     loc="#5f5a41",
+#     grid=False # 删除水平网格
+# ) 

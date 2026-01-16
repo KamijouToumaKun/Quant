@@ -1,0 +1,11 @@
+回测：策略优化的进阶技巧，止盈和止损等
+https://blog.csdn.net/deepever/article/details/147708468
+
+量化的韭菜的一些回测策略
+https://www.bilibili.com/read/readlist/rl703333?spm_id_from=333.1369.opus.module_collection.click
+
+交易的ai助手
+iris.findtruman.io
+
+因子分析工具
+alphalens

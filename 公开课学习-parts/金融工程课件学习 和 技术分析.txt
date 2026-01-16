@@ -1,0 +1,15 @@
+金融工程课件学习
+https://www.math.pku.edu.cn/teachers/lidf/course/fts/ftsnotes/html/_ftsnotes/fts-intro.html#intro-return
+
+一花依世界 量化研究员 的量化建议：去下载加密货币的数据！！！！！！！
+https://www.zhihu.com/question/365734692/answer/3003472404
+
+量价、布林线
+九转指标
+
+思想来源于技术分析领域著名大师汤姆·迪马克的TD序列，其核心功能为发现当前股价走势的拐点，提高抄底、逃顶的成功率
+就是连续九天都满足：当天的收盘价高于四个交易日前的收盘价
+只要有一天没有满足，则重新计数
+满了九个，就是涨到头了
+
+反之，满了九个连跌，就是跌到头了
